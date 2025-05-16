@@ -3,11 +3,13 @@
 #include <SDL2/SDL_audio.h>
 #include <SDL2/SDL_events.h>
 #include <SDL2/SDL_keycode.h>
+#include <SDL2/SDL_log.h>
 #include <SDL2/SDL_timer.h>
 #include <cstring>
 #include <iostream>
 #include <random>
 #include <stdio.h>
+#include <stdlib.h>
 
 unsigned char generateRandom();
 void audio_callback(void *, uint8_t, int);
@@ -60,6 +62,7 @@ int chip8::initialize(char *filename) {
   window = SDL_CreateWindow("Operlaston's CHIP-8 Emulator", 0, 0,
                             SCREEN_WIDTH * SCALE_FACTOR,
                             SCREEN_HEIGHT * SCALE_FACTOR, 0);
+
   if (window == NULL) {
     SDL_Log("Could not create SDL window: %s\n", SDL_GetError());
     return -1;
@@ -83,6 +86,13 @@ int chip8::initialize(char *filename) {
                             &obtained_audio_format, 0);
   if (dev == 0) {
     fprintf(stderr, "failed to open audio: %s\n", SDL_GetError());
+    return -1;
+  }
+
+  if ((desired_audio_format.format != obtained_audio_format.format) ||
+      (desired_audio_format.channels != obtained_audio_format.channels)) {
+    SDL_Log("Could not get desire audio spec\n");
+    printf("audio failed\n");
     return -1;
   }
 
@@ -443,11 +453,7 @@ void chip8::updateTimers() {
   }
   if (sound_timer > 0) {
     sound_timer--;
-    if (sound_timer == 0) {
-      SDL_PauseAudioDevice(dev, 1); // pause sound
-    } else {
-      SDL_PauseAudioDevice(dev, 0); // play sound
-    }
+    SDL_PauseAudioDevice(dev, 0); // play sound
   } else {
     SDL_PauseAudioDevice(dev, 1); // pause sound
   }
@@ -559,6 +565,8 @@ int chip8::handleInput() {
 void chip8::cleanup() {
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
+  SDL_PauseAudioDevice(dev, 1);
+  SDL_CloseAudioDevice(dev);
   SDL_Quit();
 }
 
