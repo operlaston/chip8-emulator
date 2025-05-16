@@ -2,6 +2,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_error.h>
 #include <SDL2/SDL_render.h>
+#include <SDL2/SDL_timer.h>
 #include <SDL2/SDL_video.h>
 #include <csignal>
 
@@ -33,7 +34,7 @@ int main(int argc, char *argv[]) {
   if (mychip8.initialize(argv[1]) < 0) {
     mychip8.isRunning = false;
   }
-  mychip8.drawGraphics();
+  mychip8.clearScreen();
 
   while (mychip8.isRunning) {
     // fetch and execute next instruction
@@ -42,15 +43,25 @@ int main(int argc, char *argv[]) {
       break;
     }
 
-    if (mychip8.emulateCycle() < 0) {
-      cleanup(0);
-      break;
+    const uint64_t start_time = SDL_GetPerformanceCounter();
+    // run 8 instructions per frame
+    for (int i = 0; i < 8; i++) {
+      if (mychip8.emulateCycle() < 0) {
+        cleanup(0);
+        break;
+      }
+      // redraw screen if necessary
+      if (mychip8.drawFlag) {
+        mychip8.drawGraphics();
+        mychip8.drawFlag = 0;
+      }
     }
+    const uint64_t end_time = SDL_GetPerformanceCounter();
 
-    // redraw screen if necessary
-    if (mychip8.drawFlag) {
-      mychip8.drawGraphics();
-    }
+    const uint64_t time_spent = (double)((end_time - start_time) * 1000) /
+                                SDL_GetPerformanceFrequency();
+    SDL_Delay(16.67f > time_spent ? 16.67f - time_spent : 16.67f);
+    mychip8.updateTimers();
   }
 
   mychip8.cleanup();

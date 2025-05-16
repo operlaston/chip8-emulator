@@ -1,15 +1,40 @@
 #include "chip8.h"
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_audio.h>
 #include <SDL2/SDL_events.h>
+#include <SDL2/SDL_keycode.h>
+#include <SDL2/SDL_timer.h>
 #include <cstring>
 #include <iostream>
 #include <random>
 #include <stdio.h>
 
 unsigned char generateRandom();
+void audio_callback(void *, uint8_t, int);
+
+// callback needs to take in a void *userdata, Uint8 *stream, int len and return
+// void
+void audio_callback(void *userdata, uint8_t *stream, int len) {
+  (void)userdata;
+  int16_t *audio_data = (int16_t *)stream;
+  static uint32_t running_sample_index = 0;
+  const int32_t square_wave_period =
+      44100 / 440; // sampling rate / square wave freq (hz)
+  const int32_t half_square_wave_period = square_wave_period / 2;
+
+  // We are filling out 2 bytes at a time (int16_t), len is in bytes,
+  //   so divide by 2
+  // If the current chunk of audio for the square wave is the crest of the wave,
+  //   this will add the volume, otherwise it is the trough of the wave, and
+  //   will add "negative" volume
+  for (int i = 0; i < len / 2; i++)
+    audio_data[i] =
+        ((running_sample_index++ / half_square_wave_period) % 2) ? 3000 : -3000;
+}
 
 int chip8::initialize(char *filename) {
   isRunning = true;
+  awaiting_keypress = false;
   pc = PROGRAM_START; // programs start at address 512 (0x200)
   opcode = 0;
   I = 0;
@@ -27,12 +52,14 @@ int chip8::initialize(char *filename) {
   delay_timer = 0;
   sound_timer = 0;
 
-  if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0) {
     SDL_Log("Could not initialize SDL: %s\n", SDL_GetError());
     return -1;
   }
 
-  window = SDL_CreateWindow("Operlaston's CHIP-8 Emulator", 0, 0, 640, 320, 0);
+  window = SDL_CreateWindow("Operlaston's CHIP-8 Emulator", 0, 0,
+                            SCREEN_WIDTH * SCALE_FACTOR,
+                            SCREEN_HEIGHT * SCALE_FACTOR, 0);
   if (window == NULL) {
     SDL_Log("Could not create SDL window: %s\n", SDL_GetError());
     return -1;
@@ -41,6 +68,21 @@ int chip8::initialize(char *filename) {
   renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
   if (renderer == NULL) {
     SDL_Log("Could not create SDL renderer: %s\n", SDL_GetError());
+    return -1;
+  }
+
+  // Init Audio stuff
+  memset(&desired_audio_format, 0, sizeof(desired_audio_format));
+  desired_audio_format.freq = 44100; // 44100hz "CD" quality
+  desired_audio_format.format = AUDIO_S16LSB;
+  desired_audio_format.channels = 1; // Mono, 1 channel
+  desired_audio_format.samples = 512;
+  desired_audio_format.callback = audio_callback;
+
+  dev = SDL_OpenAudioDevice(NULL, 0, &desired_audio_format,
+                            &obtained_audio_format, 0);
+  if (dev == 0) {
+    fprintf(stderr, "failed to open audio: %s\n", SDL_GetError());
     return -1;
   }
 
@@ -81,7 +123,7 @@ int chip8::emulateCycle() {
     return -1;
   }
 
-  drawFlag = 0;
+  // drawFlag = 0;
   opcode = memory[pc] << 8 | memory[pc + 1];
 
   // decode and execute
@@ -116,8 +158,9 @@ int chip8::emulateCycle() {
 
   case 0x2000: {
     // jump to subroutine NNN (0x2NNN)
-    if (sp >= sizeof(stack)) {
-      printf("stack overflow. last opcode: 0x%X\n", opcode);
+    if (sp >= sizeof(stack) / sizeof(unsigned short)) {
+      fprintf(stderr, "stack overflow. last opcode: 0x%X\n", opcode);
+      return -1;
     } else {
       stack[sp++] = pc;
       pc = opcode & 0x0FFF;
@@ -177,40 +220,44 @@ int chip8::emulateCycle() {
       V[x] = V[y];
     } else if (lastDigit == 1) {
       V[x] = V[x] | V[y];
+      V[0xf] = 0;
     } else if (lastDigit == 2) {
       V[x] = V[x] & V[y];
+      V[0xf] = 0;
     } else if (lastDigit == 3) {
       V[x] = V[x] ^ V[y];
+      V[0xf] = 0;
     } else if (lastDigit == 4) {
       int result = V[x] + V[y];
+      V[x] = V[x] + V[y];
+
       // set carry flag
       if (result > 0xFF) {
         V[0xF] = 1;
       } else {
         V[0xF] = 0;
       }
-      V[x] = V[x] + V[y];
     } else if (lastDigit == 5) {
+      int carryflag = 0;
       if (V[x] >= V[y]) {
-        V[0xF] = 1;
-      } else {
-        V[0xF] = 0; // underflow
+        carryflag = 1;
       }
       V[x] = V[x] - V[y];
+      V[0xF] = carryflag;
     } else if (lastDigit == 6) {
-      char lastBit = V[x] & 0x1;
-      V[x] = V[x] >> 1;
+      char lastBit = V[y] & 0x1;
+      V[x] = V[y] >> 1;
       V[0xF] = lastBit;
     } else if (lastDigit == 7) {
+      int carryflag = 0;
       if (V[y] >= V[x]) {
-        V[0xF] = 1;
-      } else {
-        V[0xF] = 0; // underflow
+        carryflag = 1;
       }
       V[x] = V[y] - V[x];
+      V[0xF] = carryflag;
     } else if (lastDigit == 0xE) {
-      char firstBit = (V[x] & 0x80) >> 7;
-      V[x] = V[x] << 1;
+      char firstBit = (V[y] & 0x80) >> 7;
+      V[x] = V[y] << 1;
       V[0xF] = firstBit;
     } else {
       printf("opcode doesn't exist 0x%X\n", opcode);
@@ -250,21 +297,24 @@ int chip8::emulateCycle() {
   }
 
   case 0xD000: {
-    unsigned char X = (opcode & 0x0F00) >> 8;
-    unsigned char Y = (opcode & 0x00F0) >> 4;
-    unsigned char x = V[X];
-    unsigned char y = V[Y];
+    unsigned char base_x = V[(opcode & 0x0F00) >> 8];
+    unsigned char base_y = V[(opcode & 0x00F0) >> 4];
+
     unsigned char n = opcode & 0x000F;
+
     for (int i = 0; i < n; i++) {
       unsigned char currBits = memory[i + I];
       // sprites drawn have a width of 8 pixels
       unsigned char bitmask = 0x80;
       for (int j = 0; j < SPRITE_WIDTH; j++) {
-        int position = ((y + i) * SCREEN_WIDTH) + x + j;
+        // wrap out of bounds pixels
+        unsigned char x = (base_x + j) % SCREEN_WIDTH;
+        unsigned char y = (base_y + i) % SCREEN_HEIGHT;
+
+        int position = (y * SCREEN_WIDTH) + x;
         unsigned char currPixel = gfx[position];
         unsigned char currBit = (currBits & bitmask) >> (SPRITE_WIDTH - j - 1);
         gfx[position] = currPixel ^ currBit;
-        printf("%d [%d]\n", position, gfx[position]);
         if (currPixel == 1 && gfx[position] == 0) {
           // set VF register if pixel is flipped from set to unset
           V[0xF] = 1;
@@ -272,6 +322,7 @@ int chip8::emulateCycle() {
         bitmask = bitmask >> 1;
       }
     }
+
     drawFlag = 1;
     break;
   }
@@ -308,10 +359,18 @@ int chip8::emulateCycle() {
       break;
     }
     case 0x000A: {
+      if (!awaiting_keypress) {
+        awaiting_keypress = true;
+        for (int i = 0; i < 16; i++) {
+          saved_key_state[i] = key[i];
+        }
+      }
       unsigned char keyPressed = 0xff;
       for (int i = 0; i < 16; i++) {
-        if (key[i]) {
+        if (key[i] && !saved_key_state[i]) {
           keyPressed = i;
+          awaiting_keypress = false;
+          break;
         }
       }
 
@@ -350,14 +409,14 @@ int chip8::emulateCycle() {
     case 0x0055: {
       // register dump
       for (uint8_t i = 0; i <= x; i++) {
-        memory[I + i] = V[i];
+        memory[I++] = V[i];
       }
       break;
     }
     case 0x0065: {
       // register load
       for (uint8_t i = 0; i <= x; i++) {
-        V[i] = memory[I + i];
+        V[i] = memory[I++];
       }
       break;
     }
@@ -372,39 +431,54 @@ int chip8::emulateCycle() {
   if (!jump) {
     pc += 2;
   }
-  // decrement timers
+
+  // printf("stack pointer is %d\n", sp);
+
+  return 0;
+}
+
+void chip8::updateTimers() {
   if (delay_timer > 0) {
     delay_timer--;
   }
   if (sound_timer > 0) {
     sound_timer--;
+    if (sound_timer == 0) {
+      SDL_PauseAudioDevice(dev, 1); // pause sound
+    } else {
+      SDL_PauseAudioDevice(dev, 0); // play sound
+    }
+  } else {
+    SDL_PauseAudioDevice(dev, 1); // pause sound
   }
-
-  return 0;
 }
 
 void chip8::setKeys() { return; }
 
-void chip8::drawGraphics() {
+void chip8::clearScreen() {
   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // black full opaque
   if (SDL_RenderClear(renderer) < 0) {
     SDL_Log("Failed to clear screen: %s\n", SDL_GetError());
-    return;
   }
+}
 
-  SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); // white full opaque
+void chip8::drawGraphics() {
 
   for (int y = 0; y < SCREEN_HEIGHT; y++) {
     for (int x = 0; x < SCREEN_WIDTH; x++) {
+      SDL_Rect pixel = {
+          x * SCALE_FACTOR, // x
+          y * SCALE_FACTOR, // y
+          SCALE_FACTOR,     // width
+          SCALE_FACTOR,     // height
+      };
       if (gfx[(y * SCREEN_WIDTH) + x] == 1) {
-        SDL_Rect pixel = {
-            x * SCALE_FACTOR, // x
-            y * SCALE_FACTOR, // y
-            SCALE_FACTOR,     // width
-            SCALE_FACTOR,     // height
-        };
-        SDL_RenderFillRect(renderer, &pixel);
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255,
+                               255); // white full opaque
+      } else {
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // black full opaque
       }
+      SDL_RenderFillRect(renderer, &pixel);
     }
   }
 
@@ -422,6 +496,9 @@ int chip8::handleInput() {
     else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
       bool isPressed = event.type == SDL_KEYDOWN;
       switch (event.key.keysym.sym) {
+      case SDLK_ESCAPE:
+        isRunning = false;
+        break;
       case SDLK_1:
         key[0x1] = isPressed;
         break;
@@ -430,9 +507,6 @@ int chip8::handleInput() {
         break;
       case SDLK_3:
         key[0x3] = isPressed;
-        break;
-      case SDLK_4:
-        key[0xc] = isPressed;
         break;
       case SDLK_q:
         key[0x4] = isPressed;
@@ -443,9 +517,6 @@ int chip8::handleInput() {
       case SDLK_e:
         key[0x6] = isPressed;
         break;
-      case SDLK_r:
-        key[0xd] = isPressed;
-        break;
       case SDLK_a:
         key[0x7] = isPressed;
         break;
@@ -455,17 +526,23 @@ int chip8::handleInput() {
       case SDLK_d:
         key[0x9] = isPressed;
         break;
-      case SDLK_f:
-        key[0xe] = isPressed;
+      case SDLK_x:
+        key[0x0] = isPressed;
         break;
       case SDLK_z:
         key[0xa] = isPressed;
         break;
-      case SDLK_x:
-        key[0x0] = isPressed;
-        break;
       case SDLK_c:
         key[0xb] = isPressed;
+        break;
+      case SDLK_4:
+        key[0xc] = isPressed;
+        break;
+      case SDLK_r:
+        key[0xd] = isPressed;
+        break;
+      case SDLK_f:
+        key[0xe] = isPressed;
         break;
       case SDLK_v:
         key[0xf] = isPressed;

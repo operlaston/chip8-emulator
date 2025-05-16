@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++17 -O2
+CXXFLAGS = -g -Wall -Wextra -std=c++17 -O2
 OBJ = chip8.o main.o
 TARGET = chip8
 
