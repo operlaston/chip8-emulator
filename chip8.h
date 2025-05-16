@@ -8,6 +8,7 @@
 #include <SDL2/SDL_error.h>
 #include <SDL2/SDL_render.h>
 #include <SDL2/SDL_video.h>
+#include <portaudio.h>
 
 #define MEM_SIZE (4096)
 #define PROGRAM_START (0x200)
@@ -16,6 +17,9 @@
 #define SCALE_FACTOR (20)
 #define SPRITE_WIDTH (8)
 #define FONT_SET_START (80)
+#define SAMPLE_RATE (44100)
+#define FREQUENCY (440)
+#define AMPLITUDE (3000)
 
 typedef enum { QUIT, RUNNING, PAUSED } emulator_state_t;
 
@@ -53,9 +57,11 @@ class chip8 {
   };
   SDL_Window *window;
   SDL_Renderer *renderer;
-  SDL_AudioSpec desired_audio_format;
-  SDL_AudioSpec obtained_audio_format;
-  SDL_AudioDeviceID dev;
+  PaStream *stream;
+
+  // SDL_AudioSpec desired_audio_format;
+  // SDL_AudioSpec obtained_audio_format;
+  // SDL_AudioDeviceID dev;
 
 public:
   int initialize(char *);

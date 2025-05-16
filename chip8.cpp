@@ -7,16 +7,54 @@
 #include <SDL2/SDL_timer.h>
 #include <cstring>
 #include <iostream>
+#include <portaudio.h>
 #include <random>
 #include <stdio.h>
 #include <stdlib.h>
 
 unsigned char generateRandom();
-void audio_callback(void *, uint8_t, int);
+// void audio_callback(void *, uint8_t, int); // SDL audio
+int audio_callback(const void *, void *, unsigned long,
+                   const PaStreamCallbackTimeInfo *, PaStreamCallbackFlags,
+                   void *);
+
+int audio_callback(const void *input, void *output, unsigned long frameCount,
+                   const PaStreamCallbackTimeInfo *timeInfo,
+                   PaStreamCallbackFlags statusFlags, void *userData) {
+  (void)input;
+  (void)timeInfo;
+  (void)userData;
+  (void)statusFlags;
+
+  int16_t *out = (int16_t *)output;
+  static uint32_t running_sample_index = 0;
+  const int32_t square_wave_period = SAMPLE_RATE / FREQUENCY;
+  const int32_t half_square_wave_period = square_wave_period / 2;
+
+  for (unsigned long i = 0; i < frameCount; i++) {
+    out[i] = ((running_sample_index++ / half_square_wave_period) % 2)
+                 ? AMPLITUDE
+                 : -AMPLITUDE;
+  }
+  return paContinue;
+  /*
+
+  float *out = (float *)output;
+  static unsigned long phase = 0;
+  unsigned long phaseIncrement =
+      (FREQUENCY << 16) / SAMPLE_RATE; // Fixed-point math
+
+  for (unsigned int i = 0; i < frameCount; i++) {
+    out[i] = (phase & 0xFFFF) < 0x8000 ? AMPLITUDE : -AMPLITUDE;
+    phase += phaseIncrement;
+  }
+  return paContinue;
+  */
+}
 
 // callback needs to take in a void *userdata, Uint8 *stream, int len and return
 // void
-void audio_callback(void *userdata, uint8_t *stream, int len) {
+/*void audio_callback(void *userdata, uint8_t *stream, int len) {
   (void)userdata;
   int16_t *audio_data = (int16_t *)stream;
   static uint32_t running_sample_index = 0;
@@ -31,8 +69,8 @@ void audio_callback(void *userdata, uint8_t *stream, int len) {
   //   will add "negative" volume
   for (int i = 0; i < len / 2; i++)
     audio_data[i] =
-        ((running_sample_index++ / half_square_wave_period) % 2) ? 3000 : -3000;
-}
+        ((running_sample_index++ / half_square_wave_period) % 2) ? 3000 : 0;
+}*/
 
 int chip8::initialize(char *filename) {
   isRunning = true;
@@ -74,7 +112,32 @@ int chip8::initialize(char *filename) {
     return -1;
   }
 
-  // Init Audio stuff
+  // initialize portaudio
+  PaError err = Pa_Initialize();
+  if (err != paNoError) {
+    fprintf(stderr, "an error occurred while initializing portaudio: %s\n",
+            Pa_GetErrorText(err));
+    return -1;
+  }
+
+  // open an audio stream
+  PaStreamParameters outputParams;
+  // Configure output (mono, 16-bit int, 44100Hz)
+  outputParams.device = Pa_GetDefaultOutputDevice();
+  outputParams.channelCount = 1;         // Mono (1 channel)
+  outputParams.sampleFormat = paInt16;   // 16-bit signed (AUDIO_S16LSB)
+  outputParams.suggestedLatency = 0.012; // ~512 samples / 44100Hz = 0.0116s
+  outputParams.hostApiSpecificStreamInfo = NULL;
+  err = Pa_OpenStream(&stream, NULL, &outputParams, SAMPLE_RATE, 512, paNoFlag,
+                      audio_callback, NULL);
+
+  if (err != paNoError) {
+    fprintf(stderr, "failed to open audio stream: %s\n", Pa_GetErrorText(err));
+    return -1;
+  }
+
+  /*
+  // Init SDL Audio stuff
   memset(&desired_audio_format, 0, sizeof(desired_audio_format));
   desired_audio_format.freq = 44100; // 44100hz "CD" quality
   desired_audio_format.format = AUDIO_S16LSB;
@@ -94,7 +157,7 @@ int chip8::initialize(char *filename) {
     SDL_Log("Could not get desire audio spec\n");
     printf("audio failed\n");
     return -1;
-  }
+  }*/
 
   FILE *fp = NULL;
   fp = fopen(filename, "rb");
@@ -453,9 +516,9 @@ void chip8::updateTimers() {
   }
   if (sound_timer > 0) {
     sound_timer--;
-    SDL_PauseAudioDevice(dev, 0); // play sound
+    Pa_StartStream(stream);
   } else {
-    SDL_PauseAudioDevice(dev, 1); // pause sound
+    Pa_StopStream(stream);
   }
 }
 
@@ -563,10 +626,24 @@ int chip8::handleInput() {
 }
 
 void chip8::cleanup() {
+  // SDL_CloseAudioDevice(dev);
+  // SDL_QuitSubSystem(SDL_INIT_AUDIO);
+
+  // cleanup port audio
+  Pa_StopStream(stream);
+  PaError err = Pa_CloseStream(stream);
+  if (err != paNoError) {
+    fprintf(stderr, "failed to close portaudio: %s\n", Pa_GetErrorText(err));
+  }
+  err = Pa_Terminate();
+  if (err != paNoError) {
+    fprintf(stderr, "failed to terminate portaudio: %s\n",
+            Pa_GetErrorText(err));
+  }
+
+  // cleanup SDL
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
-  SDL_PauseAudioDevice(dev, 1);
-  SDL_CloseAudioDevice(dev);
   SDL_Quit();
 }
 

@@ -4,7 +4,7 @@ OBJ = chip8.o main.o
 TARGET = chip8
 
 chip8: chip8.o main.o
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJ) -lSDL2
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJ) -lSDL2 -lportaudio
 
 chip8.o: chip8.cpp chip8.h
 	$(CXX) $(CXXFLAGS) -c chip8.cpp
