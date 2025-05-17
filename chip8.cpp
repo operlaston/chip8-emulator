@@ -370,8 +370,9 @@ int chip8::emulateCycle() {
   }
 
   case 0xD000: {
-    unsigned char base_x = V[(opcode & 0x0F00) >> 8];
-    unsigned char base_y = V[(opcode & 0x00F0) >> 4];
+    unsigned char base_x = V[(opcode & 0x0F00) >> 8] % SCREEN_WIDTH;
+    unsigned char base_y = V[(opcode & 0x00F0) >> 4] % SCREEN_HEIGHT;
+    V[0xf] = 0;
 
     unsigned char n = opcode & 0x000F;
 
@@ -379,10 +380,16 @@ int chip8::emulateCycle() {
       unsigned char currBits = memory[i + I];
       // sprites drawn have a width of 8 pixels
       unsigned char bitmask = 0x80;
+      unsigned char y = (base_y + i);
+      if (y >= SCREEN_HEIGHT) {
+        break;
+      }
       for (int j = 0; j < SPRITE_WIDTH; j++) {
         // wrap out of bounds pixels
-        unsigned char x = (base_x + j) % SCREEN_WIDTH;
-        unsigned char y = (base_y + i) % SCREEN_HEIGHT;
+        unsigned char x = (base_x + j);
+        if (x >= SCREEN_WIDTH) {
+          break;
+        }
 
         int position = (y * SCREEN_WIDTH) + x;
         unsigned char currPixel = gfx[position];
